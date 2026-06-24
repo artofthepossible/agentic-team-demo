@@ -1,0 +1,172 @@
+Create a banking application using Go for the backend and React for the frontend.
+Put all files in a directory called app/.
+
+---
+
+## Architecture Overview
+
+Use a clean layered architecture:
+
+app/
+├── main.go                  # Entry point, wires everything together
+├── config/
+│   └── config.go            # App config (port, DB path, JWT secret via env vars)
+├── models/
+│   └── account.go           # Account struct, transaction types, domain types
+├── store/
+│   ├── store.go             # Interface definition (IAccountStore)
+│   └── sqlite_store.go      # SQLite implementation using database/sql + mattn/go-sqlite3
+├── handlers/
+│   ├── account.go           # HTTP handlers: create, get balance
+│   └── transaction.go       # HTTP handlers: deposit, withdraw, transaction history
+├── middleware/
+│   └── middleware.go        # CORS, request logging, error recovery
+├── router/
+│   └── router.go            # Route registration using net/http ServeMux (Go 1.22+)
+├── go.mod
+├── go.sum
+└── frontend/
+    ├── package.json
+    ├── vite.config.js
+    └── src/
+        ├── main.jsx
+        ├── App.jsx
+        ├── api/
+        │   └── client.js        # Axios instance, base URL, error interceptors
+        ├── components/
+        │   ├── AccountCard.jsx
+        │   ├── TransactionForm.jsx
+        │   ├── TransactionHistory.jsx
+        │   └── CreateAccountModal.jsx
+        └── styles/
+            └── index.css        # Tailwind CSS
+
+---
+
+## Backend Specifications
+
+### Data Model
+type Account struct {
+    ID        string    `json:"id"`         // UUID v4
+    Name      string    `json:"name"`
+    Email     string    `json:"email"`
+    Balance   float64   `json:"balance"`    // stored as INTEGER cents in SQLite
+    CreatedAt time.Time `json:"created_at"`
+}
+
+type Transaction struct {
+    ID        string          `json:"id"`
+    AccountID string          `json:"account_id"`
+    Type      TransactionType `json:"type"`   // "deposit" | "withdrawal"
+    Amount    float64         `json:"amount"`
+    Note      string          `json:"note"`
+    CreatedAt time.Time       `json:"created_at"`
+}
+
+### API Endpoints
+POST   /api/accounts                    → Create account (name, email, initial_deposit)
+GET    /api/accounts/:id                → Get account details + balance
+GET    /api/accounts/:id/transactions   → List transaction history (paginated)
+POST   /api/accounts/:id/deposit        → Deposit funds (amount, note)
+POST   /api/accounts/:id/withdraw       → Withdraw funds (amount, note)
+GET    /api/health                      → Health check
+
+### Business Rules
+- All monetary values stored as integer cents (int64) in SQLite; converted to float64 in API
+- Withdrawals must be rejected if balance < amount (return 422 with clear error message)
+- Amount must be > 0 for all transactions (validate on both backend and frontend)
+- Email must be unique; return 409 Conflict if duplicate
+- Use database transactions (BEGIN/COMMIT) for deposit and withdraw operations
+- All errors returned as JSON: {"error": "message", "code": "ERROR_CODE"}
+
+### Persistence
+- Use SQLite via mattn/go-sqlite3 with WAL mode enabled
+- Run schema migrations on startup (CREATE TABLE IF NOT EXISTS)
+- Store balance as INTEGER (cents) to avoid floating point issues
+- Index accounts by email for uniqueness checks
+
+### Middleware
+- CORS: Allow http://localhost:5173 (Vite dev server) in development
+- Request logger: method, path, status, latency
+- Panic recovery: return 500 JSON instead of crashing
+
+---
+
+## Frontend Specifications
+
+### Stack
+- React 18 with Vite
+- Tailwind CSS for styling
+- Axios for HTTP calls
+- React Query (@tanstack/react-query) for data fetching, caching, and mutations
+
+### Design System
+Visual identity: "vault modernism" — precision banking meets warm accessibility.
+
+Palette:
+- Background:  #0F1117  (near-black, not pure black)
+- Surface:     #1A1D27  (card background)
+- Border:      #2A2D3E  (subtle dividers)
+- Accent:      #4F8EF7  (electric blue — primary actions)
+- Success:     #34D399  (deposits, positive balance)
+- Danger:      #F87171  (withdrawals, errors)
+- Text:        #E8EAF0  (primary), #8B8FA8 (muted)
+
+Typography:
+- Display: "Inter" (weights 700/800 for balance figures)
+- Body: "Inter" (400/500 for labels and UI)
+- Monospace: "JetBrains Mono" for account IDs and amounts
+
+Signature element: The balance display uses a large tabular-numeric counter with
+a subtle animated gradient shimmer on load — the number is the hero of the UI.
+
+### Pages / Views
+1. Home: Search or create account (centered, minimal)
+2. Account Dashboard:
+   - Large balance display (the "vault" hero number)
+   - Deposit / Withdraw forms side by side
+   - Scrollable transaction history with type icons + timestamps
+3. Create Account Modal: name, email, optional initial deposit
+
+### UX Requirements
+- Optimistic UI for deposit/withdraw (show pending state)
+- Invalidate and refetch balance + history after every transaction
+- Form validation before API call (amount > 0, required fields)
+- Display backend error messages inline (not just console)
+- Responsive: works on mobile (single-column) and desktop (two-column)
+- Empty state for transaction history: "No transactions yet — make your first deposit"
+
+---
+
+## Development Setup
+
+### Backend
+cd app
+go mod init banking-app
+go get github.com/mattn/go-sqlite3
+go run main.go
+# Runs on :8080
+
+### Frontend
+cd app/frontend
+npm install
+npm run dev
+# Runs on :5173, proxies /api/* to :8080
+
+### Vite proxy config (vite.config.js)
+export default {
+  server: {
+    proxy: {
+      '/api': 'http://localhost:8080'
+    }
+  }
+}
+
+---
+
+## Quality Standards
+- All handlers must return JSON (never plain text)
+- No global mutable state in Go; pass dependencies via struct receivers
+- React components should be small and focused (< 150 lines each)
+- Use environment variable PORT (default 8080) for the Go server port
+- Include a README.md inside app/ with setup instructions

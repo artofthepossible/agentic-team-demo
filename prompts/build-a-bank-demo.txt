@@ -25,6 +25,10 @@ app/
 │   └── router.go            # Route registration using net/http ServeMux (Go 1.22+)
 ├── go.mod
 ├── go.sum
+├── Dockerfile               # Multi-stage build: Go backend + React frontend
+├── .dockerignore            # Exclude node_modules, build artifacts, .git
+├── docker-compose.yml       # Orchestrates app + optional services
+├── README.md                # Setup, usage, and architecture docs
 └── frontend/
     ├── package.json
     ├── vite.config.js
@@ -138,7 +142,172 @@ a subtle animated gradient shimmer on load — the number is the hero of the UI.
 
 ---
 
-## Development Setup
+## Docker & Container Specifications
+
+### Dockerfile (multi-stage, single image serves everything)
+
+Use a 3-stage build:
+
+Stage 1 — frontend builder (node:20-alpine):
+  - WORKDIR /frontend
+  - Copy frontend/package.json and frontend/package-lock.json
+  - RUN npm ci                          # reproducible install
+  - Copy rest of frontend/
+  - RUN npm run build                   # outputs to /frontend/dist
+
+Stage 2 — backend builder (golang:1.22-alpine):
+  - Install gcc and musl-dev (required for mattn/go-sqlite3 CGO)
+  - WORKDIR /app
+  - Copy go.mod and go.sum first, then RUN go mod download
+  - Copy remaining Go source files
+  - Copy --from=frontend-builder /frontend/dist ./frontend/dist
+  - ENV CGO_ENABLED=1
+  - RUN go build -o banking-server .    # statically linked where possible
+
+Stage 3 — runtime (alpine:3.19):
+  - RUN apk add --no-cache ca-certificates sqlite
+  - Create non-root user: adduser -D appuser
+  - WORKDIR /app
+  - Copy --from=backend-builder /app/banking-server .
+  - Create /data directory for SQLite, chown to appuser
+  - USER appuser
+  - EXPOSE 8080
+  - ENV DB_PATH=/data/banking.db PORT=8080
+  - ENTRYPOINT ["./banking-server"]
+
+The Go server must serve the React build as static files from ./frontend/dist
+at the root path (/), and serve /api/* routes from the Go handlers.
+Use http.FileServer with a fallback to index.html for client-side routing.
+
+### .dockerignore
+Exclude the following to keep build context lean and avoid cache poisoning:
+  frontend/node_modules
+  frontend/.vite
+  frontend/dist
+  **/*.db
+  **/*.db-shm
+  **/*.db-wal
+  .git
+  .gitignore
+  README.md
+  **/*_test.go
+  **/testdata/
+
+### docker-compose.yml
+Version: "3.9"
+
+Services:
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: banking-app
+    ports:
+      - "8080:8080"
+    volumes:
+      - banking_data:/data          # persist SQLite database across restarts
+    environment:
+      - PORT=8080
+      - DB_PATH=/data/banking.db
+      - ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  banking_data:
+    driver: local
+
+### Container Design Decisions
+- Single image: Go server statically serves the compiled React app — no nginx sidecar needed
+- Named volume banking_data: SQLite file survives container restarts and rebuilds
+- Non-root user (appuser): principle of least privilege inside the container
+- Health check on /api/health: Docker will mark the container unhealthy if the Go server fails
+- CGO_ENABLED=1 required: mattn/go-sqlite3 uses CGO; alpine builder includes musl-dev
+- Build cache optimisation: go.mod/go.sum and package.json copied before source so
+  dependency layers are cached and only invalidated when deps actually change
+
+---
+
+## README.md Requirements
+
+Generate a README.md inside app/ with these sections:
+
+### 1. Header
+- App name: "Vault — Banking Demo"
+- One-line description
+- Badges: Go version, Node version, Docker, License (MIT)
+
+### 2. Quick Start (Docker — recommended)
+  git clone <repo>
+  cd app
+  docker compose up --build
+
+  Then open http://localhost:8080
+
+### 3. Quick Start (Local Development)
+  Backend:
+    cd app
+    go run main.go
+    # API on :8080
+
+  Frontend:
+    cd app/frontend
+    npm install
+    npm run dev
+    # UI on :5173 (proxied to :8080 via Vite)
+
+### 4. Environment Variables
+Table with columns: Variable | Default | Description
+  PORT        | 8080              | HTTP server port
+  DB_PATH     | ./banking.db      | Path to SQLite database file
+  ENV         | development       | Set to "production" to disable CORS wildcard
+
+### 5. API Reference
+Concise table for each endpoint:
+  Method | Path                              | Body / Params         | Description
+  POST   | /api/accounts                     | name, email, amount   | Create account
+  GET    | /api/accounts/:id                 | —                     | Get balance
+  GET    | /api/accounts/:id/transactions    | ?page=1&limit=20      | Transaction history
+  POST   | /api/accounts/:id/deposit         | amount, note          | Deposit funds
+  POST   | /api/accounts/:id/withdraw        | amount, note          | Withdraw funds
+  GET    | /api/health                       | —                     | Health check
+
+### 6. Architecture Diagram (ASCII)
+  ┌─────────────────────────────────────────┐
+  │              Docker Container            │
+  │                                         │
+  │  ┌─────────────┐    ┌────────────────┐  │
+  │  │  React SPA  │    │   Go HTTP API  │  │
+  │  │  (static)   │◄───│   :8080        │  │
+  │  └─────────────┘    └───────┬────────┘  │
+  │                             │            │
+  │                     ┌───────▼────────┐  │
+  │                     │  SQLite (WAL)  │  │
+  │                     │  /data/        │  │
+  │                     └────────────────┘  │
+  └─────────────────────────────────────────┘
+
+### 7. Project Structure
+Replicate the directory tree from the Architecture Overview above.
+
+### 8. Development Notes
+- Money is stored as integer cents (int64) to avoid float precision bugs
+- All balance mutations use SQLite transactions (BEGIN/COMMIT)
+- The React app is served by the Go binary in production (no separate web server)
+- SQLite WAL mode is enabled for better concurrent read performance
+
+### 9. License
+MIT
+
+---
+
+## Development Setup (Local, without Docker)
 
 ### Backend
 cd app
@@ -169,4 +338,6 @@ export default {
 - No global mutable state in Go; pass dependencies via struct receivers
 - React components should be small and focused (< 150 lines each)
 - Use environment variable PORT (default 8080) for the Go server port
-- Include a README.md inside app/ with setup instructions
+- Docker image must build cleanly with: docker compose up --build
+- docker compose down followed by docker compose up must preserve all account data
+- The compiled Docker image should be under 50MB

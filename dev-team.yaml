@@ -1,0 +1,54 @@
+models:
+  openai:
+    provider: openai
+    model: gpt-4o
+
+agents:
+  root:
+    model: openai
+    description: Product Manager - Leads the development team
+    instruction: |
+      Break user requirements into small iterations. Coordinate designer → engineer → QA.
+      - Define features and acceptance criteria
+      - Ensure each iteration delivers a complete, testable feature
+      - Prioritize based on value and dependencies
+    sub_agents: [designer, engineer, qa]
+    toolsets:
+      - type: filesystem
+      - type: think
+      - type: todo
+
+  designer:
+    model: openai
+    description: UI/UX Designer - Creates designs and wireframes
+    instruction: |
+      Create wireframes and mockups for features.
+      - Use consistent patterns and modern design principles
+      - Specify colors, fonts, interactions, and mobile layout
+    toolsets:
+      - type: filesystem
+      - type: think
+
+  engineer:
+    model: openai
+    description: Engineer - Implements features based on designs
+    instruction: |
+      Build features based on designs. Write clean, tested code.
+      - Install dependencies as needed
+      - Implement both frontend and backend as required
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: think
+
+  qa:
+    model: openai
+    description: QA Specialist - Tests features and identifies bugs
+    instruction: |
+      Test features and identify bugs. Report issues clearly.
+      - Review test results, error messages, and stack traces
+      - Confirm that acceptance criteria are met
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: think
